@@ -1,4 +1,5 @@
 (require 'plz)
+(require 'zoekt-lang-type)
 (require 'grep)
 
 
@@ -11,7 +12,7 @@
 (setq zoekt-file-match-limit 50)
 
 (cl-defstruct zoekt--result match-count ngram-count file-matches query-str duration)
-(cl-defstruct zoekt--file-match filename lang matches)
+(cl-defstruct zoekt--file-match filename repo-name lang matches)
 (cl-defstruct zoekt--match line-number frags url)
 (cl-defstruct zoekt--frag pre match post)
 
@@ -27,6 +28,7 @@
 (defun zoekt--parse-file-match (file-match)
   (make-zoekt--file-match
    :filename (gethash "FileName" file-match)
+   :repo-name (gethash "Repo" file-match)
    :lang (gethash "Language" file-match)
    :matches (mapcar #'zoekt--parse-match (gethash "Matches" file-match))))
 
@@ -42,7 +44,8 @@
      :file-matches  (mapcar #'zoekt--parse-file-match file-matches))))
 
 (defun zoekt--open-link (URL button)
-  (browse-url (concat zoekt-base-url (url-unhex-string URL))))
+  (message URL)
+  (browse-url URL))
 
 (defun zoekt--filter-results (query-str lang button)
   (zoekt-search (format "%s lang:%s" query-str lang )))
@@ -77,7 +80,8 @@
       (dolist (file-match (zoekt--result-file-matches resp-obj))
 
         (let ((lang (zoekt--file-match-lang file-match)))
-          
+
+          (insert (format "repo: %s\n" (zoekt--file-match-repo-name file-match)))
           (insert (format "%s  [" (zoekt--file-match-filename file-match)))
 
           (insert-text-button lang
@@ -104,24 +108,40 @@
 
 
 (defun zoekt--make-request (query)
-  (let* ((url (concat zoekt-base-url (url-encode-url (format "/search?q=%s&num=%s&format=json" query zoekt-file-match-limit))))
+  (let* ((url (concat zoekt-base-url (url-encode-url (format "/search?q=%s&num=%s&format=json" (url-hexify-string  query) zoekt-file-match-limit))))
          (parsed-resp (json-parse-string (plz 'get url) :array-type 'list)))
     (if (= 0 (gethash "MatchCount" (gethash "Stats" (gethash "result" parsed-resp))))
         (error "found 0 match")
       (zoekt--parse-result parsed-resp))))
 
+(defun zoekt--test()
+  (interactive)
+  (if (region-active-p)
+      (message (buffer-substring (mark) (point)))
+    (message "region not active")))
 
 (defun zoekt-search (query)
   (zoekt--show-result (zoekt--make-request query)))
 
-(defun zoekt-search-propmt ()
+(defun zoekt-search-prompt ()
   (interactive)
   (let* ((symbol-at-point (thing-at-point 'symbol))
-         (default-value (if (symbol-at-point) (format " (default %s) " symbol-at-point) ""))
+         (lang (zoekt--current-extension))
+
+         (default-sym (cond
+                       ((region-active-p) (buffer-substring (mark) (point)))
+                       ((symbol-at-point) symbol-at-point)
+                       (t nil)))
+
+         (default-query (format "%s%s"
+                                (if (region-active-p) default-sym (format "sym:%s" default-sym))
+                                (if (region-active-p) "" (if (not (null lang)) (format " lang:%s" lang) ""))   ))
+         
+         (default-value (if (not (null default-sym)) (format " (default '%s') " default-query) ""))
          (query (read-from-minibuffer (format "search%s> " default-value))))
 
     (if (= (length query) 0)
-        (zoekt-search (format "%s" symbol-at-point))
+        (zoekt-search default-query)
       (zoekt-search query))))
 
 (defvar-keymap zoekt-mode-map
@@ -133,11 +153,8 @@
   :keymap zoekt-mode-map
   (read-only-mode 1))
 
-
 (provide 'zoekt-mode)
 
 
-;;; TODO: select lang for current buffer
-;;; TODO: show repository name
 ;;; TODO: customize res count
 ;;; TODO: comment afficher les longues lignes ?
